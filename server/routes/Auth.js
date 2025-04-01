@@ -28,13 +28,11 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-// ✅ Initialize Razorpay
 const razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID,
     key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// ✅ Function to Verify reCAPTCHA
 async function verifyRecaptcha(token) {
     try {
         const response = await axios.post(
@@ -46,18 +44,15 @@ async function verifyRecaptcha(token) {
     } 
 }
 
-// ✅ 1. Create Order API (Frontend Calls This First)
 router.post("/create-order", async (req, res) => {
     try {
         const { recaptchaToken } = req.body;
 
-        // 🔍 Verify reCAPTCHA
         const isHuman = await verifyRecaptcha(recaptchaToken);
         if (!isHuman) return res.status(400).json({ message: "reCAPTCHA verification failed!" });
 
-        // ✅ Create a Razorpay Order
         const options = {
-            amount: 100 * 100, // ₹100 in paise
+            amount: 100 * 100, 
             currency: "INR",
             receipt: `order_rcptid_${uuidv4()}`,
             payment_capture: 1,
@@ -70,12 +65,11 @@ router.post("/create-order", async (req, res) => {
     }
 });
 
-// ✅ 2. Verify Payment & Register User
+
 router.post("/verify-payment", async (req, res) => {
     try {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature, name, email, password } = req.body;
 
-        // 🔍 Verify Razorpay Signature
         const body = razorpay_order_id + "|" + razorpay_payment_id;
         const expectedSignature = crypto.createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
             .update(body)
@@ -85,7 +79,6 @@ router.post("/verify-payment", async (req, res) => {
             return res.status(400).json({ message: "Invalid Payment Signature" });
         }
 
-        // ✅ Register User After Successful Payment
         const existingUser = await User.findOne({ email });
         if (existingUser) return res.status(400).json({ message: "User already exists" });
 
@@ -95,10 +88,8 @@ router.post("/verify-payment", async (req, res) => {
         const newUser = new User({ name, email, password: hashedPassword, uuid: useruuid });
         await newUser.save();
 
-        // ✅ Generate QR Code
         const qrCodeData = await QRCode.toDataURL(useruuid);
 
-        // ✅ Send Email with QR Code
         const mailOptions = {
             from: process.env.EMAIL,
             to: email,
