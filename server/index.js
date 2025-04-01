@@ -11,7 +11,7 @@ const app = express();
 app.use(express.json());
 
 app.use(cors({
-    origin: ["https://e-commerce-revispy.vercel.app", "http://localhost:3000"], 
+    origin: ["https://e-commerce-revispy.vercel.app", "http://localhost:5173"], 
     credentials: true,
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type', 'Authorization']

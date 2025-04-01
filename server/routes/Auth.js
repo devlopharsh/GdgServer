@@ -9,13 +9,15 @@ const dotenv = require("dotenv");
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
+const Razorpay = require("razorpay");
+const crypto = require("crypto");
 
 dotenv.config();
 const router = express.Router();
 
 const qrCodeDir = path.join(__dirname, "../qrcodes");
 if (!fs.existsSync(qrCodeDir)) {
-    fs.mkdirSync(qrCodeDir, { recursive: true }); 
+    fs.mkdirSync(qrCodeDir, { recursive: true });
 }
 
 const transporter = nodemailer.createTransport({
@@ -26,18 +28,64 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-router.post("/register", async (req, res) => {
+// ✅ Initialize Razorpay
+const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+// ✅ Function to Verify reCAPTCHA
+async function verifyRecaptcha(token) {
     try {
-        const { name, email, password, captchaToken } = req.body;
-
-        const captchaResponse = await axios.post(
-            `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${captchaToken}`
+        const response = await axios.post(
+            `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${token}`
         );
+        return response.data.success;
+    } catch (error) {
+        return false;
+    } 
+}
 
-        if (!captchaResponse.data.success) {
-            return res.status(400).json({ message: "CAPTCHA verification failed!" });
+// ✅ 1. Create Order API (Frontend Calls This First)
+router.post("/create-order", async (req, res) => {
+    try {
+        const { recaptchaToken } = req.body;
+
+        // 🔍 Verify reCAPTCHA
+        const isHuman = await verifyRecaptcha(recaptchaToken);
+        if (!isHuman) return res.status(400).json({ message: "reCAPTCHA verification failed!" });
+
+        // ✅ Create a Razorpay Order
+        const options = {
+            amount: 100 * 100, // ₹100 in paise
+            currency: "INR",
+            receipt: `order_rcptid_${uuidv4()}`,
+            payment_capture: 1,
+        };
+
+        const order = await razorpay.orders.create(options);
+        res.json({ orderId: order.id, currency: order.currency, amount: order.amount });
+    } catch (error) {
+        res.status(500).json({ message: "Error creating order", error });
+    }
+});
+
+// ✅ 2. Verify Payment & Register User
+router.post("/verify-payment", async (req, res) => {
+    try {
+        const { razorpay_order_id, razorpay_payment_id, razorpay_signature, name, email, password } = req.body;
+
+        // 🔍 Verify Razorpay Signature
+        const body = razorpay_order_id + "|" + razorpay_payment_id;
+        const expectedSignature = crypto.createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+            .update(body)
+            .digest("hex");
+
+        if (expectedSignature !== razorpay_signature) {
+            return res.status(400).json({ message: "Invalid Payment Signature" });
         }
-s
+
+        // ✅ Register User After Successful Payment
         const existingUser = await User.findOne({ email });
         if (existingUser) return res.status(400).json({ message: "User already exists" });
 
@@ -47,45 +95,21 @@ s
         const newUser = new User({ name, email, password: hashedPassword, uuid: useruuid });
         await newUser.save();
 
-        const qrCodePath = path.join(qrCodeDir, `${useruuid}.png`);
+        // ✅ Generate QR Code
+        const qrCodeData = await QRCode.toDataURL(useruuid);
 
-        await QRCode.toFile(qrCodePath, useruuid);
-
+        // ✅ Send Email with QR Code
         const mailOptions = {
             from: process.env.EMAIL,
             to: email,
             subject: "Event Registration Successful - Your QR Code",
-            html: `
-                <h3>Welcome, ${name}!</h3>
-                <p>Here is your unique QR Code for event attendance:</p>
-                <img src="cid:qrcode" alt="Your QR Code"/>
-            `,
-            attachments: [
-                {
-                    filename: "qrcode.png",
-                    path: qrCodePath,
-                    cid: "qrcode", 
-                },
-            ],
+            html: `<h3>Welcome, ${name}!</h3><p>Your registration is successful. Here is your QR code:</p><img src="${qrCodeData}" />`,
         };
 
-        transporter.sendMail(mailOptions, (err, info) => {
-            if (err) {
-                console.error("Error sending email:", err);
-                return res.status(500).json({ message: "Error sending email", error: err });
-            } else {
-                console.log("QR Code email sent successfully:", info.response);
-
-                fs.unlink(qrCodePath, (err) => {
-                    if (err) console.error("Error deleting QR Code file:", err);
-                });
-
-                return res.status(201).json({ message: "User registered successfully. QR Code sent to email." });
-            }
-        });
+        await transporter.sendMail(mailOptions);
+        res.status(201).json({ message: "User registered successfully. QR Code sent to email." });
     } catch (error) {
-        console.error("Server error:", error);
-        res.status(500).json({ message: "Server error" });
+        res.status(500).json({ message: "Payment verification failed", error });
     }
 });
 
